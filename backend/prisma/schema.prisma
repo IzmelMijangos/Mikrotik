@@ -1,0 +1,190 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Usuarios del sistema SaaS (Administradores y Clientes)
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      UserRole @default(CLIENT)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relación con clientes (solo si el usuario es CLIENT)
+  client Client?
+
+  @@index([email])
+}
+
+enum UserRole {
+  ADMIN  // Administrador del SaaS (MASTER)
+  CLIENT // Cliente del SaaS (Dueño de un negocio con Hotspot)
+}
+
+// Clientes del SaaS (Negocios con Hotspot)
+model Client {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  businessName String
+  slug        String   @unique // URL amigable para el portal
+  logo        String?
+  primaryColor String  @default("#3B82F6")
+  secondaryColor String @default("#1E40AF")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relaciones
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mikrotikSettings MikrotikSettings?
+  hotspotProfiles HotspotProfile[]
+  hotspotTickets  HotspotTicket[]
+  transactions    Transaction[]
+
+  @@index([slug])
+  @@index([userId])
+}
+
+// Configuración de MikroTik por cliente
+model MikrotikSettings {
+  id        String   @id @default(cuid())
+  clientId  String   @unique
+  host      String   // IP del MikroTik
+  port      Int      @default(8728)
+  username  String   // Usuario API
+  password  String   // Password API (encriptado)
+  useSsl    Boolean  @default(false)
+  timeout   Int      @default(5000)
+  isActive  Boolean  @default(true)
+  lastSync  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relaciones
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+}
+
+// Perfiles de Hotspot (planes de acceso)
+model HotspotProfile {
+  id              String   @id @default(cuid())
+  clientId        String
+  name            String   // Nombre del plan (ej: "1 Hora", "1 Día")
+  description     String?
+  mikrotikProfile String   // Nombre del perfil en MikroTik
+  price           Float    // Precio en centavos
+  currency        String   @default("MXN")
+  duration        Int?     // Duración en segundos (null = ilimitado)
+  dataLimit       BigInt?  // Límite de datos en bytes (null = ilimitado)
+  speedLimit      String?  // Límite de velocidad (ej: "2M/2M")
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relaciones
+  client         Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  hotspotTickets HotspotTicket[]
+
+  @@unique([clientId, mikrotikProfile])
+  @@index([clientId])
+  @@index([isActive])
+}
+
+// Fichas de acceso (vouchers)
+model HotspotTicket {
+  id              String       @id @default(cuid())
+  clientId        String
+  profileId       String
+  username        String       @unique // Usuario generado automáticamente
+  password        String       // Password generado automáticamente
+  status          TicketStatus @default(PENDING)
+  purchaseEmail   String?      // Email del comprador
+  purchasedAt     DateTime?
+  activatedAt     DateTime?
+  expiresAt       DateTime?
+  usedDataBytes   BigInt?      @default(0)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  // Relaciones
+  client       Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  profile      HotspotProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  transaction  Transaction?
+
+  @@index([clientId])
+  @@index([profileId])
+  @@index([status])
+  @@index([username])
+}
+
+enum TicketStatus {
+  PENDING   // Ficha creada pero no pagada
+  ACTIVE    // Ficha pagada y activa
+  USED      // Ficha usada completamente
+  EXPIRED   // Ficha expirada
+  CANCELLED // Ficha cancelada
+}
+
+// Transacciones de pago
+model Transaction {
+  id              String            @id @default(cuid())
+  clientId        String
+  ticketId        String            @unique
+  amount          Float             // Monto en centavos
+  currency        String            @default("MXN")
+  status          TransactionStatus @default(PENDING)
+  paymentMethod   String?           // stripe, paypal, etc.
+  paymentIntentId String?           @unique // ID de Stripe Payment Intent
+  stripeSessionId String?           @unique // ID de Stripe Checkout Session
+  customerEmail   String?
+  metadata        Json?             // Información adicional
+  paidAt          DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Relaciones
+  client Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  ticket HotspotTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@index([status])
+  @@index([paymentIntentId])
+  @@index([stripeSessionId])
+}
+
+enum TransactionStatus {
+  PENDING   // Pago pendiente
+  COMPLETED // Pago completado
+  FAILED    // Pago fallido
+  REFUNDED  // Pago reembolsado
+  CANCELLED // Pago cancelado
+}
+
+// Logs de actividad del Hotspot
+model HotspotLog {
+  id        String   @id @default(cuid())
+  clientId  String
+  username  String
+  action    String   // login, logout, data_limit_reached, time_limit_reached
+  ipAddress String?
+  macAddress String?
+  bytesIn   BigInt?
+  bytesOut  BigInt?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([clientId])
+  @@index([username])
+  @@index([createdAt])
+}
